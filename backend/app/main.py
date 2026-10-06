@@ -32,6 +32,11 @@ class Settings(BaseSettings):
     deepseek_model: str = 'deepseek-chat'
     deepseek_base_url: str = 'https://api.deepseek.com'
     frontend_origin: str = 'http://localhost:5173'
+    # Exact production/stable origins go in FRONTEND_ORIGIN. This regex also
+    # permits Vercel preview deployments for this BizInsight frontend project.
+    # It is intentionally scoped to this project/owner rather than allowing
+    # every *.vercel.app origin.
+    frontend_origin_regex: str = r'^https://biz-[a-z0-9-]+-shadrach-nelsons-projects\.vercel\.app$'
     dev_auth_bypass: bool = False
     dev_user_id: str = '00000000-0000-0000-0000-000000000001'
 
@@ -425,7 +430,23 @@ def recommendations(db: Session, business: Business, sales: list[Sale], expenses
 
 
 app = FastAPI(title='BizInsight API', version='2.0.0')
-app.add_middleware(CORSMiddleware, allow_origins=[x.strip() for x in settings.frontend_origin.split(',')], allow_credentials=True, allow_methods=['*'], allow_headers=['*'])
+
+# CORS: allow explicitly configured stable origins plus only the BizInsight
+# Vercel preview URL pattern. Do not use '*' with credentials.
+_configured_origins = [
+    origin.strip()
+    for origin in settings.frontend_origin.split(',')
+    if origin.strip()
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_configured_origins,
+    allow_origin_regex=settings.frontend_origin_regex or None,
+    allow_credentials=True,
+    allow_methods=['*'],
+    allow_headers=['*'],
+)
 
 @app.get('/api/health')
 def health(db: Session = Depends(get_db)):
