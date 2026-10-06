@@ -33,10 +33,11 @@ class Settings(BaseSettings):
     deepseek_base_url: str = 'https://api.deepseek.com'
     frontend_origin: str = 'http://localhost:5173'
     # Exact production/stable origins go in FRONTEND_ORIGIN. This regex also
-    # permits Vercel preview deployments for this BizInsight frontend project.
-    # It is intentionally scoped to this project/owner rather than allowing
-    # every *.vercel.app origin.
-    frontend_origin_regex: str = r'^https://biz-[a-z0-9-]+-shadrach-nelsons-projects\.vercel\.app$'
+    # permits BizInsight Vercel deployments such as biz-xl-livid.vercel.app
+    # and Vercel preview URLs such as biz-<id>-shadrach-nelsons-projects.vercel.app.
+    # It is scoped to the BizInsight project name prefix rather than allowing
+    # every *.vercel.app origin. Authentication remains mandatory on protected routes.
+    frontend_origin_regex: str = r'^https://biz-[a-z0-9-]+\.vercel\.app$'
     dev_auth_bypass: bool = False
     dev_user_id: str = '00000000-0000-0000-0000-000000000001'
 
