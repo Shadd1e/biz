@@ -222,7 +222,81 @@ def get_db() -> Session:
         yield db
 
 
+_JWKS_CACHE_TTL = timedelta(hours=1)
+_ALLOWED_JWKS_ALGORITHMS = {'RS256', 'ES256'}
 _jwks_cache: dict[str, Any] = {'keys': None, 'expires': datetime.min.replace(tzinfo=timezone.utc)}
+
+
+def _supabase_jwks_url() -> str:
+    """Return the configured JWKS URL, deriving Supabase's standard URL when possible."""
+    if settings.supabase_jwks_url:
+        return settings.supabase_jwks_url
+    if settings.supabase_url:
+        return f"{settings.supabase_url.rstrip('/')}/auth/v1/.well-known/jwks.json"
+    return ''
+
+
+def _load_jwks(force_refresh: bool = False) -> list[dict[str, Any]]:
+    """Load and cache the Supabase signing keys, refreshing on demand."""
+    now = datetime.now(timezone.utc)
+    if not force_refresh and _jwks_cache['keys'] is not None and now < _jwks_cache['expires']:
+        return _jwks_cache['keys']
+
+    jwks_url = _supabase_jwks_url()
+    if not jwks_url:
+        raise RuntimeError('Supabase JWKS URL is not configured.')
+
+    response = httpx.get(jwks_url, timeout=5)
+    response.raise_for_status()
+    data = response.json()
+    keys = data.get('keys')
+    if not isinstance(keys, list) or not keys:
+        raise RuntimeError('Supabase JWKS response contains no signing keys.')
+
+    _jwks_cache['keys'] = keys
+    _jwks_cache['expires'] = now + _JWKS_CACHE_TTL
+    return keys
+
+
+def _verify_jwks_token(token: str) -> dict[str, Any]:
+    header = jwt.get_unverified_header(token)
+    algorithm = header.get('alg')
+    kid = header.get('kid')
+
+    if algorithm not in _ALLOWED_JWKS_ALGORITHMS:
+        raise ValueError('Unsupported JWT signing algorithm.')
+    if not kid:
+        raise ValueError('JWT signing key id is missing.')
+
+    keys = _load_jwks()
+    key = next((candidate for candidate in keys if candidate.get('kid') == kid), None)
+    if key is None:
+        # Supabase can rotate signing keys. Refresh once before rejecting a new kid.
+        keys = _load_jwks(force_refresh=True)
+        key = next((candidate for candidate in keys if candidate.get('kid') == kid), None)
+    if key is None:
+        raise ValueError('JWT signing key was not found.')
+
+    key_algorithm = key.get('alg')
+    if key_algorithm and key_algorithm != algorithm:
+        raise ValueError('JWT signing algorithm does not match the signing key.')
+
+    key_type = key.get('kty')
+    if algorithm == 'RS256':
+        if key_type != 'RSA':
+            raise ValueError('RS256 requires an RSA signing key.')
+        public_key = jwt.algorithms.RSAAlgorithm.from_jwk(json.dumps(key))
+    else:  # ES256
+        if key_type != 'EC':
+            raise ValueError('ES256 requires an EC signing key.')
+        public_key = jwt.algorithms.ECAlgorithm.from_jwk(json.dumps(key))
+
+    return jwt.decode(
+        token,
+        public_key,
+        algorithms=[algorithm],
+        audience='authenticated',
+    )
 
 
 def current_user_id(credentials: HTTPAuthorizationCredentials | None = Depends(security)) -> UUID:
@@ -230,28 +304,35 @@ def current_user_id(credentials: HTTPAuthorizationCredentials | None = Depends(s
         return UUID(settings.dev_user_id)
     if not credentials:
         raise HTTPException(401, 'Authentication required.')
+
     token = credentials.credentials
     try:
-        if settings.supabase_jwt_secret:
-            payload = jwt.decode(token, settings.supabase_jwt_secret, algorithms=['HS256'], audience='authenticated')
+        header = jwt.get_unverified_header(token)
+        algorithm = header.get('alg')
+
+        # Legacy Supabase projects may still use HS256. Only use the configured
+        # legacy secret for an explicitly HS256 token; asymmetric Supabase
+        # signing keys are verified through JWKS below.
+        if algorithm == 'HS256' and settings.supabase_jwt_secret:
+            payload = jwt.decode(
+                token,
+                settings.supabase_jwt_secret,
+                algorithms=['HS256'],
+                audience='authenticated',
+            )
+        elif algorithm in _ALLOWED_JWKS_ALGORITHMS:
+            payload = _verify_jwks_token(token)
         else:
-            raise RuntimeError
-        return UUID(payload['sub'])
+            raise ValueError('Unsupported JWT signing algorithm.')
+
+        subject = payload.get('sub')
+        if not subject:
+            raise ValueError('JWT subject is missing.')
+        return UUID(subject)
+    except HTTPException:
+        raise
     except Exception:
-        if not settings.supabase_jwks_url:
-            raise HTTPException(401, 'Invalid authentication token.')
-        try:
-            now = datetime.now(timezone.utc)
-            if _jwks_cache['keys'] is None or now >= _jwks_cache['expires']:
-                data = httpx.get(settings.supabase_jwks_url, timeout=5).json()
-                _jwks_cache['keys'] = data['keys']
-                _jwks_cache['expires'] = now + timedelta(hours=1)
-            header = jwt.get_unverified_header(token)
-            key = next(k for k in _jwks_cache['keys'] if k['kid'] == header['kid'])
-            payload = jwt.decode(token, jwt.algorithms.RSAAlgorithm.from_jwk(json.dumps(key)), algorithms=['RS256'], audience='authenticated')
-            return UUID(payload['sub'])
-        except Exception:
-            raise HTTPException(401, 'Invalid authentication token.')
+        raise HTTPException(401, 'Invalid authentication token.')
 
 
 def business_for(db: Session, user_id: UUID) -> Business:
@@ -530,16 +611,50 @@ def import_csv(kind:str,file:UploadFile=File(...),user_id:UUID=Depends(current_u
         for i,row in enumerate(rows, start=2):
             try:
                 if kind=='products':
-                    cat_name=(row.get('category') or 'General').strip(); cat=db.scalar(select(Category).where(Category.business_id==b.id,func.lower(Category.name)==cat_name.lower()))
-                    if not cat: cat=Category(business_id=b.id,name=cat_name); db.add(cat); db.flush()
-                    db.add(Product(business_id=b.id,category_id=cat.id,name=row['name'].strip(),description=row.get('description') or None,cost_price=Decimal(row.get('cost_price','0')),selling_price=Decimal(row.get('selling_price','0')),current_stock=int(row.get('current_stock','0')),reorder_level=int(row.get('reorder_level','5')),sku=row.get('sku') or None))
-                elif kind=='expenses': db.add(Expense(business_id=b.id,name=row['name'].strip(),category=row['category'].strip(),amount=Decimal(row['amount']),expense_date=datetime.fromisoformat(row['date'])) )
+                    cat_name=(row.get('category') or 'General').strip()
+                    if not cat_name:
+                        raise ValueError('category is required')
+                    cat=db.scalar(select(Category).where(Category.business_id==b.id,func.lower(Category.name)==cat_name.lower()))
+                    if not cat:
+                        if len(cat_name) > 120:
+                            raise ValueError('category must be at most 120 characters')
+                        cat=Category(business_id=b.id,name=cat_name); db.add(cat); db.flush()
+                    product=ProductIn(
+                        category_id=cat.id,
+                        name=(row.get('name') or '').strip(),
+                        description=row.get('description') or None,
+                        cost_price=Decimal(row.get('cost_price','0') or '0'),
+                        selling_price=Decimal(row.get('selling_price','0') or '0'),
+                        current_stock=int(row.get('current_stock','0') or '0'),
+                        reorder_level=int(row.get('reorder_level','5') or '5'),
+                        sku=row.get('sku') or None,
+                    )
+                    db.add(Product(business_id=b.id, **product.model_dump()))
+                elif kind=='expenses':
+                    expense=ExpenseIn(
+                        name=(row.get('name') or '').strip(),
+                        category=(row.get('category') or '').strip(),
+                        amount=Decimal(row.get('amount') or '0'),
+                        expense_date=datetime.fromisoformat(row['date']),
+                        notes=row.get('notes') or None,
+                    )
+                    db.add(Expense(business_id=b.id, **expense.model_dump()))
                 else:
                     p=db.scalar(select(Product).where(Product.business_id==b.id,Product.id==UUID(row['product_id'])).with_for_update())
-                    if not p: raise ValueError('product_id not found')
-                    qty=int(row['quantity']); unit=Decimal(row.get('unit_price') or p.selling_price)
-                    if qty<=0 or qty>p.current_stock: raise ValueError('quantity exceeds stock')
-                    p.current_stock-=qty; db.add(Sale(business_id=b.id,product_id=p.id,quantity=qty,unit_price=unit,total_amount=unit*qty,sales_channel=row.get('channel') or 'Physical Store',payment_method=row.get('payment_method') or 'Cash',sale_date=datetime.fromisoformat(row['date'])))
+                    if not p or not p.is_active:
+                        raise ValueError('product_id not found')
+                    sale=SaleIn(
+                        product_id=p.id,
+                        quantity=int(row['quantity']),
+                        unit_price=Decimal(row['unit_price']) if row.get('unit_price') else p.selling_price,
+                        sales_channel=(row.get('channel') or 'Physical Store').strip(),
+                        payment_method=(row.get('payment_method') or 'Cash').strip(),
+                        sale_date=datetime.fromisoformat(row['date']),
+                    )
+                    if sale.quantity > p.current_stock:
+                        raise ValueError('quantity exceeds stock')
+                    p.current_stock-=sale.quantity
+                    db.add(Sale(business_id=b.id, total_amount=sale.unit_price * sale.quantity, **sale.model_dump()))
                 imported+=1
             except Exception as ex: errors.append({'row':i,'error':str(ex)})
         if errors: db.rollback(); raise HTTPException(422,{'message':'Import rolled back because validation failed.','errors':errors[:20]})
