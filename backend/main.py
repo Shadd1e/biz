@@ -112,6 +112,10 @@ def edit_settings(payload:dict,uid=Depends(owner)):
         b=business(c,uid)
         return clean(update(c,'business_settings',(onerow(c,'select id from business_settings where business_id=:bid',{'bid':b['id']}) or {})['id'],b['id'],data))
 
+@app.get('/api/dashboard')
+def dashboard(uid=Depends(owner)):
+    with db() as c: return summary(c,business(c,uid))
+
 @app.get('/api/{table}')
 def list_records(table:str,uid=Depends(owner)):
     if table not in FIELDS and table!='sales': raise HTTPException(404,'Unknown resource')
@@ -173,10 +177,6 @@ def summary(c,b):
     d=calculate(sales,expenses,products,int(s.get('dashboard_period') or 30));d['currency']=s.get('currency') or 'NGN'
     return d
 
-@app.get('/api/dashboard')
-def dashboard(uid=Depends(owner)):
-    with db() as c: return summary(c,business(c,uid))
-
 @app.get('/api/reports/summary')
 def report(uid=Depends(owner)):
     with db() as c: return summary(c,business(c,uid))
@@ -237,9 +237,9 @@ async def import_csv(kind:str,file:UploadFile=File(...),uid=Depends(owner)):
 async def ai_insights(uid=Depends(owner)):
     with db() as c:
         b=business(c,uid)
-        settings=onerow(c,'select ai_enabled from business_settings where business_id=:bid',{'bid':b['id']}) or {}
+        settings=onerow(c,'select * from business_settings where business_id=:bid',{'bid':b['id']}) or {}
         if not settings.get('ai_enabled',True):
-            raise HTTPException(403,'Business insight is disabled in Settings. Enable DeepSeek interpretation to use it.')
+            raise HTTPException(403,'AI insights are disabled in Settings. Enable DeepSeek interpretation to use this feature.')
         d=summary(c,b)
     findings=[r['message'] for r in d['recommendations']]
     fallback={'available':False,'summary':'This summary is based on recorded business data. Gross profit is not available without reliable historical costs.','key_findings':findings,'positive_signals':[],'attention_items':findings,'recommendations':['Review your recorded sales and expenses.']}
