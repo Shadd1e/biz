@@ -112,6 +112,11 @@ def edit_settings(payload:dict,uid=Depends(owner)):
         b=business(c,uid)
         return clean(update(c,'business_settings',(onerow(c,'select id from business_settings where business_id=:bid',{'bid':b['id']}) or {})['id'],b['id'],data))
 
+# Static routes must be registered before the /api/{table} catch-all
+@app.get('/api/dashboard')
+def dashboard(uid=Depends(owner)):
+    with db() as c: return summary(c,business(c,uid))
+
 @app.get('/api/{table}')
 def list_records(table:str,uid=Depends(owner)):
     if table not in FIELDS and table!='sales': raise HTTPException(404,'Unknown resource')
@@ -172,10 +177,6 @@ def summary(c,b):
     products=allrows(c,'select * from products where business_id=:bid',{'bid':bid})
     d=calculate(sales,expenses,products,int(s.get('dashboard_period') or 30));d['currency']=s.get('currency') or 'NGN'
     return d
-
-@app.get('/api/dashboard')
-def dashboard(uid=Depends(owner)):
-    with db() as c: return summary(c,business(c,uid))
 
 @app.get('/api/reports/summary')
 def report(uid=Depends(owner)):
