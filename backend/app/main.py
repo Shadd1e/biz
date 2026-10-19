@@ -237,9 +237,9 @@ async def import_csv(kind:str,file:UploadFile=File(...),uid=Depends(owner)):
 async def ai_insights(uid=Depends(owner)):
     with db() as c:
         b=business(c,uid)
-        settings=onerow(c,'select * from business_settings where business_id=:bid',{'bid':b['id']}) or {}
+        settings=onerow(c,'select ai_enabled from business_settings where business_id=:bid',{'bid':b['id']}) or {}
         if not settings.get('ai_enabled',True):
-            raise HTTPException(403,'AI insights are disabled in Settings. Enable DeepSeek interpretation to use this feature.')
+            raise HTTPException(403,'Business insight is disabled in Settings. Enable DeepSeek interpretation to use it.')
         d=summary(c,b)
     findings=[r['message'] for r in d['recommendations']]
     fallback={'available':False,'summary':'This summary is based on recorded business data. Gross profit is not available without reliable historical costs.','key_findings':findings,'positive_signals':[],'attention_items':findings,'recommendations':['Review your recorded sales and expenses.']}

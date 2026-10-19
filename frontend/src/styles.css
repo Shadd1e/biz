@@ -15,37 +15,5 @@
 :root[data-theme="dark"] th{background:#272722;color:#aaa69b}
 :root[data-theme="dark"] .form input,:root[data-theme="dark"] .form textarea,:root[data-theme="dark"] .form select,:root[data-theme="dark"] .inline-form input,:root[data-theme="dark"] .setting select{background:#252520;color:var(--ink);border-color:var(--line)}
 
-/* Contrast and typography consistency patch */
-:root{font-family:Inter,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;font-synthesis:none;text-rendering:optimizeLegibility;color-scheme:light dark;--page:#f7f5ef;--surface:#fffefa;--control:#fffefa;--control-text:#171717;--soft-line:#e8e5dc;--soft-fill:#f3f0e7;--muted-strong:#5c5952}
-:root[data-theme="light"]{color-scheme:light;--page:#f7f5ef;--surface:#fffefa;--control:#fffefa;--control-text:#171717;--soft-line:#e8e5dc;--soft-fill:#f3f0e7;--muted-strong:#5c5952}
-:root[data-theme="dark"]{color-scheme:dark;--page:#171715;--surface:#20201d;--control:#292923;--control-text:#f5f2e9;--soft-line:#393830;--soft-fill:#2b2a24;--muted-strong:#c3beb2}
-@media(prefers-color-scheme:dark){:root[data-theme="system"]{color-scheme:dark;--page:#171715;--surface:#20201d;--control:#292923;--control-text:#f5f2e9;--soft-line:#393830;--soft-fill:#2b2a24;--muted-strong:#c3beb2}}
-@media(prefers-color-scheme:light){:root[data-theme="system"]{color-scheme:light;--page:#f7f5ef;--surface:#fffefa;--control:#fffefa;--control-text:#171717;--soft-line:#e8e5dc;--soft-fill:#f3f0e7;--muted-strong:#5c5952}}
-html,body,#root{min-height:100%;color:var(--ink)}
-body{background:var(--page);color:var(--ink)}
-input,textarea,select{color:var(--control-text);background:var(--control)}
-input::placeholder,textarea::placeholder{color:var(--muted-strong);opacity:1}
-input:disabled,textarea:disabled,select:disabled{color:var(--muted);background:var(--soft-fill);opacity:1}
-input:focus-visible,textarea:focus-visible,select:focus-visible,button:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-.form input,.form textarea,.form select,.inline-form input,.setting select{background:var(--control);color:var(--control-text);border-color:var(--line)}
-.form input:focus,.form textarea:focus,.form select:focus,.setting select:focus{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 22%,transparent)}
-.setting select option{background:var(--control);color:var(--control-text)}
-.panel,.table-panel,.metric,.modal,.setup-box{background:var(--surface);color:var(--ink);border-color:var(--line)}
-.panel h3,.panel h4,.metric strong,.rank strong,.rank span,.finding,.setting b,.toggle b,td{color:var(--ink)}
-.muted,.page-head p,.panel-head p,.setting span,.toggle small{color:var(--muted)}
-th{background:var(--soft-fill);color:var(--muted-strong);border-color:var(--line)}
-td,th,.rank,.finding,.setting,.toggle{border-color:var(--soft-line)}
-td small,.metric small{color:var(--muted-strong)}
-.empty{background:var(--soft-fill);color:var(--ink);border-color:var(--line)}
-.empty p{color:var(--muted)}
-.notice{background:var(--soft-fill);color:var(--ink);border-left-color:var(--accent)}
-.ai-sections ul{color:var(--muted-strong)}
-.secondary{background:var(--surface);color:var(--ink);border-color:var(--line)}
-.secondary:hover{background:var(--soft-fill);border-color:var(--muted)}
-.text-button{color:var(--muted-strong)}
-.skeleton{background:var(--soft-fill)}
-.overlay{background:rgb(0 0 0 / 58%)}
-:root[data-theme="dark"] .finding-icon.info{color:#dedbd2;background:#34332d}
-:root[data-theme="dark"] .finding-icon.positive{color:#a8d6b4;background:#26392b}
-:root[data-theme="dark"] .finding-icon.warning{color:#f0d28c;background:#403720}
-@media(prefers-color-scheme:dark){:root[data-theme="system"] .finding-icon.info{color:#dedbd2;background:#34332d}:root[data-theme="system"] .finding-icon.positive{color:#a8d6b4;background:#26392b}:root[data-theme="system"] .finding-icon.warning{color:#f0d28c;background:#403720}}
+/* Lite mode uses the full available dashboard width when advanced panels are hidden. */
+.lite-dashboard-grid{grid-template-columns:minmax(0,1fr)}
