@@ -38,7 +38,7 @@ def health_db():
         out['raw_scheme']=raw.split('://',1)[0] if '://' in raw else None
         try:
             from sqlalchemy.engine import make_url
-            u=make_url(url)
+            u=make_url(raw)
             out.update(driver=u.drivername,username=u.username,host=u.host,port=u.port,database=u.database,
                        query_keys=sorted(u.query),password_set=bool(u.password),
                        password_looks_like_placeholder=bool(u.password) and u.password.startswith('[') and u.password.endswith(']'),
