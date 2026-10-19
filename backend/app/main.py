@@ -28,6 +28,30 @@ engine=create_engine(url,pool_pre_ping=True) if url else None
 @app.get('/health')
 def health(): return {'status':'ok','service':'bizinsight-api','database_configured':bool(engine)}
 
+@app.get('/health/db')  # TEMPORARY diagnostic: delete after the DB issue is fixed. Never returns the password or full URL.
+def health_db():
+    raw=os.getenv('DATABASE_URL','')
+    out={'exists':bool(raw),'engine_built':engine is not None}
+    if raw:
+        out['raw_has_whitespace_or_quotes']=raw!=raw.strip() or '"' in raw or "'" in raw
+        out['raw_at_sign_count']=raw.count('@')
+        out['raw_scheme']=raw.split('://',1)[0] if '://' in raw else None
+        try:
+            from sqlalchemy.engine import make_url
+            u=make_url(url)
+            out.update(driver=u.drivername,username=u.username,host=u.host,port=u.port,database=u.database,
+                       query_keys=sorted(u.query),password_set=bool(u.password),
+                       password_looks_like_placeholder=bool(u.password) and u.password.startswith('[') and u.password.endswith(']'),
+                       username_has_project_ref='.' in (u.username or ''),
+                       host_is_pooler=bool(u.host) and 'pooler.supabase.com' in u.host)
+        except Exception as e: out['parse_error']=type(e).__name__
+    if engine is not None:
+        try:
+            with engine.connect() as c: c.execute(text('select 1'))
+            out['connect']='ok'
+        except Exception as e: out.update(connect='failed',error_type=type(e).__name__,error=str(getattr(e,'orig',e))[:300])
+    return out
+
 async def owner(authorization:str|None=Header(None)):
     if not authorization or not authorization.startswith('Bearer '): raise HTTPException(401,'Sign in required')
     base=os.getenv('SUPABASE_URL','').rstrip('/')
