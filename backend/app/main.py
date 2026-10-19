@@ -8,11 +8,6 @@ from collections import defaultdict
 import httpx
 from fastapi import FastAPI, Depends, HTTPException, Header, UploadFile, File, Query
 from fastapi.responses import StreamingResponse, Response
-from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-from reportlab.lib import colors
-from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.lib.units import inch
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -27,30 +22,6 @@ engine=create_engine(url,pool_pre_ping=True) if url else None
 
 @app.get('/health')
 def health(): return {'status':'ok','service':'bizinsight-api','database_configured':bool(engine)}
-
-@app.get('/health/db')  # TEMPORARY diagnostic: delete after the DB issue is fixed. Never returns the password or full URL.
-def health_db():
-    raw=os.getenv('DATABASE_URL','')
-    out={'exists':bool(raw),'engine_built':engine is not None}
-    if raw:
-        out['raw_has_whitespace_or_quotes']=raw!=raw.strip() or '"' in raw or "'" in raw
-        out['raw_at_sign_count']=raw.count('@')
-        out['raw_scheme']=raw.split('://',1)[0] if '://' in raw else None
-        try:
-            from sqlalchemy.engine import make_url
-            u=make_url(raw)
-            out.update(driver=u.drivername,username=u.username,host=u.host,port=u.port,database=u.database,
-                       query_keys=sorted(u.query),password_set=bool(u.password),
-                       password_looks_like_placeholder=bool(u.password) and u.password.startswith('[') and u.password.endswith(']'),
-                       username_has_project_ref='.' in (u.username or ''),
-                       host_is_pooler=bool(u.host) and 'pooler.supabase.com' in u.host)
-        except Exception as e: out['parse_error']=type(e).__name__
-    if engine is not None:
-        try:
-            with engine.connect() as c: c.execute(text('select 1'))
-            out['connect']='ok'
-        except Exception as e: out.update(connect='failed',error_type=type(e).__name__,error=str(getattr(e,'orig',e))[:300])
-    return out
 
 async def owner(authorization:str|None=Header(None)):
     if not authorization or not authorization.startswith('Bearer '): raise HTTPException(401,'Sign in required')
@@ -101,14 +72,6 @@ def clean(row):
 
 def safe(data,allowed): return {k:v for k,v in data.items() if k in allowed}
 
-@app.get('/api/dashboard')
-def dashboard(uid=Depends(owner)):
-    with db() as c: return summary(c,business(c,uid))
-
-@app.get('/api/reports/summary')
-def report(uid=Depends(owner)):
-    with db() as c: return summary(c,business(c,uid))
-
 BUS_FIELDS={'name','business_type','description','phone','email','address'}
 SET_FIELDS={'currency','dashboard_period','recommendations_enabled','ai_enabled','low_stock_alerts','expense_alerts','sales_alerts','theme'}
 FIELDS={'categories':{'name','description'},'products':{'name','category_id','cost_price','selling_price','current_stock','reorder_level','sku','description','is_active'},'expenses':{'name','category','amount','notes','expense_date'}}
@@ -147,17 +110,14 @@ def edit_settings(payload:dict,uid=Depends(owner)):
     data=safe(payload,SET_FIELDS)
     with db() as c:
         b=business(c,uid)
-        current=onerow(c,'select * from business_settings where business_id=:bid',{'bid':b['id']})
-        if current:
-            return clean(update(c,'business_settings',current['id'],b['id'],data)) if data else clean(current)
-        return clean(insert(c,'business_settings',{'business_id':b['id'],**data}))
+        return clean(update(c,'business_settings',(onerow(c,'select id from business_settings where business_id=:bid',{'bid':b['id']}) or {})['id'],b['id'],data))
 
 @app.get('/api/{table}')
 def list_records(table:str,uid=Depends(owner)):
     if table not in FIELDS and table!='sales': raise HTTPException(404,'Unknown resource')
     with db() as c:
         b=business(c,uid)
-        if table=='products': q='select p.*,c.name category_name from products p left join categories c on c.id=p.category_id where p.business_id=:bid and p.is_active=true order by p.created_at desc'
+        if table=='products': q='select p.*,c.name category_name from products p left join categories c on c.id=p.category_id where p.business_id=:bid order by p.created_at desc'
         elif table=='sales': q='select s.*,p.name product_name from sales s left join products p on p.id=s.product_id where s.business_id=:bid order by s.sale_date desc limit 2000'
         else: q=f'select * from {table} where business_id=:bid order by created_at desc limit 2000'
         return clean(allrows(c,q,{'bid':b['id']}))
@@ -168,17 +128,12 @@ def add_record(table:str,payload:dict,uid=Depends(owner)):
     with db() as c:
         b=business(c,uid)
         if table=='sales':
-            pid=payload.get('product_id')
-            try:
-                qty=int(payload.get('quantity',0))
-                price=D(payload.get('unit_price')) if payload.get('unit_price') not in (None,'') else None
-            except (ValueError, TypeError, ArithmeticError):
-                raise HTTPException(422,'Quantity or unit price is invalid')
+            pid=payload.get('product_id');qty=int(payload.get('quantity',0))
             if qty<=0: raise HTTPException(422,'Quantity must be positive')
             p=onerow(c,'select * from products where id=:id and business_id=:bid for update',{'id':pid,'bid':b['id']})
             if not p: raise HTTPException(422,'Product does not belong to your business')
             if p['current_stock']<qty: raise HTTPException(422,'Insufficient stock')
-            if price is None: price=D(p['selling_price'])
+            price=D(payload.get('unit_price',p['selling_price']))
             if price<0: raise HTTPException(422,'Invalid price')
             data={'product_id':pid,'quantity':qty,'unit_price':price,'total_amount':price*qty,'unit_cost_at_sale':p['cost_price'],'sales_channel':payload.get('sales_channel','Physical Store'),'payment_method':payload.get('payment_method','Cash'),'sale_date':payload.get('sale_date') or datetime.utcnow().isoformat(),'business_id':b['id']}
             c.execute(text('update products set current_stock=current_stock-:qty where id=:pid and business_id=:bid'),{'qty':qty,'pid':pid,'bid':b['id']})
@@ -207,13 +162,7 @@ def delete_record(table:str,rid:UUID,uid=Depends(owner)):
         b,row=own(c,uid,table,str(rid))
         if table=='sales':
             c.execute(text('update products set current_stock=current_stock+:q where id=:id and business_id=:bid'),{'q':row['quantity'],'id':row['product_id'],'bid':b['id']})
-        if table=='products':
-            c.execute(text('update products set is_active=false where id=:rid and business_id=:bid'),{'rid':rid,'bid':b['id']})
-        else:
-            try:
-                c.execute(text(f'delete from {table} where id=:rid and business_id=:bid'),{'rid':rid,'bid':b['id']})
-            except IntegrityError:
-                raise HTTPException(409,'This record is referenced by existing records and cannot be deleted.')
+        c.execute(text(f'delete from {table} where id=:rid and business_id=:bid'),{'rid':rid,'bid':b['id']})
     return Response(status_code=204)
 
 def summary(c,b):
@@ -224,42 +173,27 @@ def summary(c,b):
     d=calculate(sales,expenses,products,int(s.get('dashboard_period') or 30));d['currency']=s.get('currency') or 'NGN'
     return d
 
+@app.get('/api/dashboard')
+def dashboard(uid=Depends(owner)):
+    with db() as c: return summary(c,business(c,uid))
+
+@app.get('/api/reports/summary')
+def report(uid=Depends(owner)):
+    with db() as c: return summary(c,business(c,uid))
+
 @app.get('/api/reports/export/{kind}')
 def export(kind:str,uid=Depends(owner)):
     if kind not in {'sales','expenses','inventory'}: raise HTTPException(404,'Unknown export')
     table='products' if kind=='inventory' else kind
     with db() as c:
         b=business(c,uid)
-        rows=allrows(c, f"select * from {table} where business_id=:bid" + (" and is_active=true" if kind=='inventory' else "") + " order by created_at desc limit 10000", {'bid':b['id']})
+        rows=allrows(c,f'select * from {table} where business_id=:bid order by created_at desc limit 10000',{'bid':b['id']})
     fields={'sales':['sale_date','product_id','quantity','unit_price','total_amount','sales_channel','payment_method'],'expenses':['expense_date','name','category','amount','notes'],'inventory':['name','sku','category_id','selling_price','cost_price','current_stock','reorder_level']}[kind]
     stream=io.StringIO();w=csv.DictWriter(stream,fieldnames=fields);w.writeheader()
     for row in rows:
         # Avoid formula injection in spreadsheet applications.
         w.writerow({k:("'"+str(row.get(k)) if isinstance(row.get(k),str) and row[k].startswith(('=','+','-','@')) else row.get(k,'')) for k in fields})
     return Response(stream.getvalue(),media_type='text/csv',headers={'Content-Disposition':f'attachment; filename="bizinsight-{kind}.csv"'})
-
-@app.get('/api/reports/export/summary/pdf')
-def export_summary_pdf(uid=Depends(owner)):
-    with db() as c:
-        b=business(c,uid)
-        data=summary(c,b)
-    output=io.BytesIO()
-    styles=getSampleStyleSheet()
-    doc=SimpleDocTemplate(output,pagesize=letter,rightMargin=0.65*inch,leftMargin=0.65*inch,topMargin=0.65*inch,bottomMargin=0.65*inch)
-    overview=data['overview']; currency=data.get('currency','NGN')
-    def money(value): return 'Unavailable' if value is None else f"{currency} {Decimal(str(value)):,.2f}"
-    story=[Paragraph('BizInsight Business Summary',styles['Title']),Spacer(1,8),Paragraph(f"Reporting period: last {data['period']} days",styles['Normal']),Spacer(1,16)]
-    rows=[['Metric','Recorded value'],['Revenue',money(overview.get('revenue')),],['Operating expenses',money(overview.get('expenses'))],['Gross profit',money(overview.get('gross_profit'))],['Completed sales',str(overview.get('sales_count',0))],['Low-stock products',str(overview.get('low_stock_count',0))],['Expense-to-sales ratio',('Unavailable' if overview.get('expense_ratio') is None else f"{overview['expense_ratio']:.2f}%")]]
-    table=Table(rows,colWidths=[3.1*inch,3.0*inch],repeatRows=1)
-    table.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),colors.HexColor('#eee7d7')),('TEXTCOLOR',(0,0),(-1,0),colors.HexColor('#282820')),('GRID',(0,0),(-1,-1),0.4,colors.HexColor('#d8d2c5')),('PADDING',(0,0),(-1,-1),8),('VALIGN',(0,0),(-1,-1),'TOP')]))
-    story.extend([table,Spacer(1,18),Paragraph('Insights',styles['Heading2'])])
-    findings=data.get('recommendations',[])
-    if findings:
-        story.extend(Paragraph('• '+str(item.get('message','')),styles['BodyText']) for item in findings)
-    else: story.append(Paragraph('No rule-based findings for this period.',styles['BodyText']))
-    story.extend([Spacer(1,12),Paragraph('Gross profit is unavailable when reliable historical cost data is missing. Values reflect records stored in BizInsight and are not a substitute for formal accounting statements.',styles['Italic'])])
-    doc.build(story)
-    return Response(output.getvalue(),media_type='application/pdf',headers={'Content-Disposition':'attachment; filename="bizinsight-summary.pdf"'})
 
 @app.post('/api/imports/{kind}')
 async def import_csv(kind:str,file:UploadFile=File(...),uid=Depends(owner)):
@@ -302,7 +236,11 @@ async def import_csv(kind:str,file:UploadFile=File(...),uid=Depends(owner)):
 @app.post('/api/ai/insights')
 async def ai_insights(uid=Depends(owner)):
     with db() as c:
-        b=business(c,uid); d=summary(c,b)
+        b=business(c,uid)
+        settings=onerow(c,'select * from business_settings where business_id=:bid',{'bid':b['id']}) or {}
+        if not settings.get('ai_enabled',True):
+            raise HTTPException(403,'AI insights are disabled in Settings. Enable DeepSeek interpretation to use this feature.')
+        d=summary(c,b)
     findings=[r['message'] for r in d['recommendations']]
     fallback={'available':False,'summary':'This summary is based on recorded business data. Gross profit is not available without reliable historical costs.','key_findings':findings,'positive_signals':[],'attention_items':findings,'recommendations':['Review your recorded sales and expenses.']}
     key=os.getenv('DEEPSEEK_API_KEY','')
